@@ -1,0 +1,62 @@
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(2, 6, 23, 0.85);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  height: 60px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  color: var(--text-primary);
+  font-size: 1.125rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.logoText { letter-spacing: -0.01em; }
+
+.right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.walletInfo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 6px 14px;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.walletDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+  flex-shrink: 0;
+}
+
+.walletAddr { font-family: monospace; }
+
+@media (max-width: 640px) {
+  .topbar { padding: 0 16px; }
+  .logoText { display: none; }
+  .walletAddr { display: none; }
+}

@@ -1,0 +1,47 @@
+.panel { display: flex; flex-direction: column; gap: 16px; height: 100%; }
+
+.title { font-size: 1rem; font-weight: 600; }
+
+.empty { color: var(--text-muted); font-size: 0.875rem; }
+
+.list { list-style: none; display: flex; flex-direction: column; gap: 14px; }
+
+.item { display: flex; flex-direction: column; gap: 6px; }
+
+.itemHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.agentName { font-size: 0.875rem; font-weight: 500; }
+.amount { font-size: 0.875rem; color: var(--accent); font-weight: 600; }
+
+.barTrack {
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #25c98f);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.pct { font-size: 0.75rem; color: var(--text-muted); }
+
+.total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-top: auto;
+}
+
+.totalAmount { font-weight: 700; color: var(--text-primary); }

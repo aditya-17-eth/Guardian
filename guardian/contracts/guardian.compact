@@ -1,0 +1,153 @@
+pragma language_version 0.22;
+
+import CompactStandardLibrary;
+
+// ─── AgentRecord struct ───────────────────────────────────────────────────────
+
+export struct AgentRecord {
+  credential_hash: Bytes<32>,
+  category: Uint<8>,
+  risk_tier: Uint<8>,
+  aml_clear: Boolean,
+  active: Boolean,
+  expires_at: Uint<64>,
+  created_at: Uint<64>,
+}
+
+// ─── Ledger (public on-chain state) ──────────────────────────────────────────
+
+export ledger agent_registry: Map<Bytes<32>, AgentRecord>;
+export ledger credential_count: Counter;
+export ledger total_transactions: Counter;
+
+// ─── Witnesses (private inputs) ──────────────────────────────────────────────
+
+witness ownerAddress(): Bytes<32>;
+witness spendingLimit(): Uint<64>;
+witness agentSecret(): Bytes<32>;
+
+// ─── Helper: derive agent_id from owner + secret ─────────────────────────────
+
+circuit computeAgentId(owner_address: Bytes<32>, agent_secret: Bytes<32>): Bytes<32> {
+  const owner_commitment: Bytes<32> = persistentCommit<Bytes<32>>(owner_address, agent_secret);
+  return persistentHash<Bytes<32>>(owner_commitment);
+}
+
+// ─── Circuit 1: registerAgent ─────────────────────────────────────────────────
+
+export circuit registerAgent(
+  category: Uint<8>,
+  risk_tier: Uint<8>,
+  aml_clear: Boolean,
+  expires_at: Uint<64>,
+  created_at: Uint<64>
+): Bytes<32> {
+  // Disclose private witness values for use in ledger operations
+  const owner_address: Bytes<32> = disclose(ownerAddress());
+  const spending_limit: Uint<64> = disclose(spendingLimit());
+  const agent_secret: Bytes<32>  = disclose(agentSecret());
+
+  // Disclose public circuit parameters for use in ledger operations
+  const d_category: Uint<8>   = disclose(category);
+  const d_risk_tier: Uint<8>  = disclose(risk_tier);
+  const d_aml_clear: Boolean  = disclose(aml_clear);
+  const d_expires_at: Uint<64> = disclose(expires_at);
+  const d_created_at: Uint<64> = disclose(created_at);
+
+  assert(d_aml_clear == true, "AML check must pass before credential is issued");
+  assert(spending_limit > 0, "Spending limit must be greater than zero");
+  assert(spending_limit <= 10000000, "Spending limit exceeds maximum allowed");
+
+  const agent_id: Bytes<32> = computeAgentId(owner_address, agent_secret);
+  const d_agent_id: Bytes<32> = disclose(agent_id);
+
+  assert(!agent_registry.member(d_agent_id), "Agent already registered");
+
+  const credential_hash: Bytes<32> = persistentCommit<Bytes<32>>(owner_address, agent_secret);
+
+  const record: AgentRecord = AgentRecord {
+    credential_hash: credential_hash,
+    category: d_category,
+    risk_tier: d_risk_tier,
+    aml_clear: d_aml_clear,
+    active: true,
+    expires_at: d_expires_at,
+    created_at: d_created_at,
+  };
+
+  agent_registry.insert(d_agent_id, record);
+  credential_count.increment(1);
+  total_transactions.increment(1);
+
+  return d_agent_id;
+}
+
+// ─── Circuit 2: verifyAgent ───────────────────────────────────────────────────
+
+export circuit verifyAgent(agent_id: Bytes<32>): Boolean {
+  const d_agent_id: Bytes<32> = disclose(agent_id);
+  if (!agent_registry.member(d_agent_id)) {
+    return false;
+  }
+  const record: AgentRecord = agent_registry.lookup(d_agent_id);
+  return record.active && record.aml_clear;
+}
+
+// ─── Circuit 3: revokeAgent ───────────────────────────────────────────────────
+
+export circuit revokeAgent(agent_id: Bytes<32>): [] {
+  const owner_address: Bytes<32> = disclose(ownerAddress());
+  const agent_secret: Bytes<32>  = disclose(agentSecret());
+  const d_agent_id: Bytes<32>    = disclose(agent_id);
+
+  const expected_id: Bytes<32> = computeAgentId(owner_address, agent_secret);
+  assert(expected_id == d_agent_id, "Caller is not the owner of this agent");
+  assert(agent_registry.member(d_agent_id), "Agent not found");
+
+  const record: AgentRecord = agent_registry.lookup(d_agent_id);
+
+  const updated: AgentRecord = AgentRecord {
+    credential_hash: record.credential_hash,
+    category: record.category,
+    risk_tier: record.risk_tier,
+    aml_clear: record.aml_clear,
+    active: false,
+    expires_at: record.expires_at,
+    created_at: record.created_at,
+  };
+
+  agent_registry.insert(d_agent_id, updated);
+  total_transactions.increment(1);
+
+  return [];
+}
+
+// ─── Circuit 4: updateAgentStatus ────────────────────────────────────────────
+
+export circuit updateAgentStatus(agent_id: Bytes<32>, new_status: Boolean): [] {
+  const owner_address: Bytes<32> = disclose(ownerAddress());
+  const agent_secret: Bytes<32>  = disclose(agentSecret());
+  const d_agent_id: Bytes<32>    = disclose(agent_id);
+  const d_new_status: Boolean    = disclose(new_status);
+
+  const expected_id: Bytes<32> = computeAgentId(owner_address, agent_secret);
+  assert(expected_id == d_agent_id, "Caller is not the owner of this agent");
+  assert(agent_registry.member(d_agent_id), "Agent not found");
+
+  const record: AgentRecord = agent_registry.lookup(d_agent_id);
+
+  const updated: AgentRecord = AgentRecord {
+    credential_hash: record.credential_hash,
+    category: record.category,
+    risk_tier: record.risk_tier,
+    aml_clear: record.aml_clear,
+    active: d_new_status,
+    expires_at: record.expires_at,
+    created_at: record.created_at,
+  };
+
+  agent_registry.insert(d_agent_id, updated);
+  total_transactions.increment(1);
+
+  return [];
+}

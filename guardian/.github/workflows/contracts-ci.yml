@@ -1,0 +1,41 @@
+name: Contracts CI
+
+on:
+  push:
+    paths: ["guardian/contracts/**"]
+  pull_request:
+    paths: ["guardian/contracts/**"]
+
+jobs:
+  compile-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install unzip (required by compact toolchain)
+        run: sudo apt-get install -y unzip
+
+      - name: Install Compact toolchain v0.29.0
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/midnightntwrk/compact/releases/latest/download/compact-installer.sh | sh
+          compact update 0.29.0
+
+      - name: Compile Guardian contract
+        working-directory: guardian
+        run: |
+          export PATH="$HOME/.compact/versions/0.29.0/x86_64-unknown-linux-musl:$PATH"
+          compactc contracts/guardian.compact contracts/managed/guardian
+
+      - name: Verify artifacts exist
+        working-directory: guardian
+        run: |
+          test -d contracts/managed/guardian/keys
+          test -d contracts/managed/guardian/contract
+          test -f contracts/managed/guardian/keys/registerAgent.prover
+          test -f contracts/managed/guardian/keys/verifyAgent.prover
+          echo "Contract compilation successful — all 4 circuits compiled"
+
+      - name: Run contract unit tests
+        working-directory: guardian
+        run: pnpm test:contracts
