@@ -9,8 +9,25 @@ import { nodePolyfills } from "vite-plugin-node-polyfills";
 const workspaceRoot = path.dirname(fileURLToPath(import.meta.url));
 const guardianAssetsDir = path.resolve(workspaceRoot, "contracts/managed/guardian");
 const guardianAssetsRoute = "/contracts/managed/guardian";
-const guardianContractEntry = path.resolve(guardianAssetsDir, "contract/index.js");
-const guardianCompactRuntimeAlias = "compact-runtime-v14";
+const midnightJsUtilsEntry = path.resolve(
+  workspaceRoot,
+  "node_modules/@midnight-ntwrk/midnight-js-utils/dist/index.mjs"
+);
+const platformJsEntry = path.resolve(
+  workspaceRoot,
+  "node_modules/@midnight-ntwrk/platform-js/dist/esm/index.js"
+);
+const platformJsEffectDir = path.resolve(
+  workspaceRoot,
+  "node_modules/@midnight-ntwrk/platform-js/dist/esm/effect"
+);
+
+function platformEffectAlias(moduleName: string): { find: string; replacement: string } {
+  return {
+    find: `@midnight-ntwrk/platform-js/effect/${moduleName}`,
+    replacement: path.resolve(platformJsEffectDir, `${moduleName}.js`),
+  };
+}
 
 function contentTypeFor(filePath: string): string {
   if (filePath.endsWith(".json")) return "application/json";
@@ -38,17 +55,6 @@ function copyDirectory(sourceDir: string, targetDir: string): void {
 function guardianContractAssetsPlugin(): Plugin {
   return {
     name: "guardian-contract-assets",
-    transform(code, id) {
-      const normalizedId = path.normalize(id);
-      if (normalizedId !== guardianContractEntry) {
-        return null;
-      }
-
-      return code.replaceAll(
-        '"@midnight-ntwrk/compact-runtime"',
-        `"${guardianCompactRuntimeAlias}"`
-      );
-    },
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const requestUrl = req.url?.split("?")[0] ?? "";
@@ -105,12 +111,36 @@ export default defineConfig({
   ],
   envPrefix: "VITE_",
   resolve: {
+    alias: [
+      { find: /^@midnight-ntwrk\/midnight-js-utils$/, replacement: midnightJsUtilsEntry },
+      platformEffectAlias("CoinPublicKey"),
+      platformEffectAlias("Configuration"),
+      platformEffectAlias("ContractAddress"),
+      platformEffectAlias("DomainSeparator"),
+      platformEffectAlias("Hex"),
+      platformEffectAlias("IntegerRange"),
+      platformEffectAlias("NetworkId"),
+      platformEffectAlias("NetworkIdMoniker"),
+      platformEffectAlias("ParseError"),
+      platformEffectAlias("SigningKey"),
+      {
+        find: "@midnight-ntwrk/platform-js/effect",
+        replacement: path.resolve(platformJsEffectDir, "index.js"),
+      },
+      {
+        find: "@midnight-ntwrk/platform-js/effect/index",
+        replacement: path.resolve(platformJsEffectDir, "index.js"),
+      },
+      { find: /^@midnight-ntwrk\/platform-js$/, replacement: platformJsEntry },
+    ],
     // Force single instances of these packages to prevent Symbol identity issues
     dedupe: [
       "@midnight-ntwrk/compact-js",
       "@midnight-ntwrk/compact-runtime",
       "@midnight-ntwrk/midnight-js-contracts",
       "@midnight-ntwrk/midnight-js-types",
+      "@midnight-ntwrk/midnight-js-utils",
+      "@midnight-ntwrk/platform-js",
       "effect",
     ],
   },
@@ -121,6 +151,7 @@ export default defineConfig({
       "@midnight-ntwrk/compact-runtime",
       "@midnight-ntwrk/midnight-js-contracts",
       "@midnight-ntwrk/midnight-js-types",
+      "effect",
     ],
     exclude: [
       "@midnight-ntwrk/ledger-v8",

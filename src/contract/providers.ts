@@ -18,6 +18,16 @@ import { browserPrivateStateProvider } from "./browserPrivateStateProvider";
 
 type GuardianCircuitId = "registerAgent" | "verifyAgent" | "revokeAgent" | "updateAgentStatus";
 
+function assertWalletKey(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized === "[object Object]" || normalized === "undefined" || normalized === "null") {
+    throw new Error(
+      `${label} is invalid. Disconnect and reconnect Lace so Guardian can refresh the Midnight wallet keys.`
+    );
+  }
+  return normalized;
+}
+
 class BrowserZkConfigProvider extends ZKConfigProvider<GuardianCircuitId> {
   private readonly baseUrl: string;
 
@@ -98,7 +108,13 @@ export async function setupProviders(
   // Ensure network ID is set before any SDK operation
   setNetworkId(MIDNIGHT_SDK_NETWORK_ID);
 
-  if (!coinPublicKey) {
+  const normalizedCoinPublicKey = assertWalletKey(coinPublicKey, "Coin public key");
+  const normalizedEncryptionPublicKey = assertWalletKey(
+    encryptionPublicKey ?? normalizedCoinPublicKey,
+    "Encryption public key"
+  );
+
+  if (!normalizedCoinPublicKey) {
     throw new Error(
       "Could not retrieve coin public key from wallet. Make sure Lace Midnight is connected and unlocked."
     );
@@ -133,9 +149,9 @@ export async function setupProviders(
     zkConfigProvider,
 
     walletProvider: {
-      coinPublicKey,
-      getCoinPublicKey: () => coinPublicKey,
-      getEncryptionPublicKey: () => encryptionPublicKey ?? coinPublicKey,
+      coinPublicKey: normalizedCoinPublicKey,
+      getCoinPublicKey: () => normalizedCoinPublicKey,
+      getEncryptionPublicKey: () => normalizedEncryptionPublicKey,
       balanceTx: (tx: unknown, newCoins: unknown) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const w = walletAPI as any;

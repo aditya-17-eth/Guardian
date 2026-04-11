@@ -21,6 +21,61 @@ interface EIP6963ProviderDetail {
   provider: any;
 }
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function normalizeWalletString(value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === "[object Object]" || trimmed === "undefined" || trimmed === "null") {
+      return "";
+    }
+    return trimmed;
+  }
+  if (typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (!value || typeof value !== "object") return "";
+
+  const record = value as Record<string, unknown> & { toHexString?: () => string };
+  if (typeof record.toHexString === "function") {
+    return record.toHexString();
+  }
+
+  const candidateKeys = [
+    "address",
+    "bech32",
+    "value",
+    "hex",
+    "encoded",
+    "unshieldedAddress",
+    "shieldedAddress",
+    "coinPublicKey",
+    "coin_public_key",
+    "shieldedCoinPublicKey",
+    "shieldedEncryptionPublicKey",
+    "publicKey",
+    "cpk",
+  ] as const;
+
+  for (const key of candidateKeys) {
+    const candidate = record[key];
+    if (typeof candidate === "string") return candidate;
+  }
+
+  const bytes = record.bytes;
+  if (bytes instanceof Uint8Array) return bytesToHex(bytes);
+  if (Array.isArray(bytes) && bytes.every((byte) => typeof byte === "number")) {
+    return bytesToHex(Uint8Array.from(bytes));
+  }
+
+  return "";
+}
+
 /**
  * Discover the Lace Midnight wallet via EIP-6963 event system.
  * Returns the provider object (which has .enable()) or null.
@@ -124,18 +179,18 @@ export function useMidnightWallet() {
         console.log("[Guardian] getUnshieldedAddress() full object:", JSON.stringify(unshieldedAddr));
         console.log("[Guardian] getUnshieldedAddress() keys:", unshieldedAddr ? Object.keys(unshieldedAddr) : []);
         if (typeof unshieldedAddr === "string") {
-          address = unshieldedAddr;
+          address = normalizeWalletString(unshieldedAddr);
         } else if (unshieldedAddr) {
           // Try every known key
-          address = unshieldedAddr.address ?? unshieldedAddr.bech32 ?? unshieldedAddr.value
-            ?? unshieldedAddr.hex ?? unshieldedAddr.encoded ?? "";
+          address = normalizeWalletString(
+            unshieldedAddr.address ?? unshieldedAddr.bech32 ?? unshieldedAddr.value
+              ?? unshieldedAddr.hex ?? unshieldedAddr.encoded ?? ""
+          );
           // Also check if coinPublicKey is nested here
           const cpk = unshieldedAddr.coinPublicKey ?? unshieldedAddr.coin_public_key
             ?? unshieldedAddr.cpk ?? unshieldedAddr.publicKey;
           if (cpk) {
-            coinPublicKey = typeof cpk === "string" ? cpk
-              : typeof cpk.toHexString === "function" ? cpk.toHexString()
-              : cpk.hex ?? String(cpk);
+            coinPublicKey = normalizeWalletString(cpk);
           }
         }
       } catch (e) {
@@ -147,13 +202,13 @@ export function useMidnightWallet() {
         const shielded = await a.getShieldedAddresses?.();
         const entry = Array.isArray(shielded) ? shielded[0] : shielded;
         if (entry?.shieldedCoinPublicKey) {
-          coinPublicKey = entry.shieldedCoinPublicKey;
+          coinPublicKey = normalizeWalletString(entry.shieldedCoinPublicKey);
         }
         if (entry?.shieldedEncryptionPublicKey) {
-          encryptionPublicKey = entry.shieldedEncryptionPublicKey;
+          encryptionPublicKey = normalizeWalletString(entry.shieldedEncryptionPublicKey);
         }
         if (!address && entry?.shieldedAddress) {
-          address = entry.shieldedAddress;
+          address = normalizeWalletString(entry.shieldedAddress);
         }
       } catch (e) {
         console.warn("[Guardian] getShieldedAddresses() failed:", e);
@@ -163,12 +218,15 @@ export function useMidnightWallet() {
       if (!address) {
         try {
           const unshielded = await a.getUnshieldedAddress?.();
-          address = unshielded?.unshieldedAddress ?? (typeof unshielded === "string" ? unshielded : "");
+          address = normalizeWalletString(unshielded?.unshieldedAddress ?? unshielded);
         } catch { /* ignore */ }
       }
 
       console.log("[Guardian] Final address:", address);
       console.log("[Guardian] Final coinPublicKey:", coinPublicKey);
+      address = normalizeWalletString(address);
+      coinPublicKey = normalizeWalletString(coinPublicKey);
+      encryptionPublicKey = normalizeWalletString(encryptionPublicKey);
       if (!address) address = coinPublicKey;
 
       if (!coinPublicKey) {

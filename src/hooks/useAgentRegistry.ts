@@ -19,6 +19,32 @@ import { CONTRACT_ADDRESS } from "../lib/constants";
 import { captureContractError } from "../lib/sentry";
 import type { TxStep } from "../components/TransactionStatus";
 
+const LOCAL_CONTRACT_ADDRESS_KEY = "guardian.contractAddress.v2";
+
+function normalizeStoredContractAddress(contractAddress: string | null | undefined): string {
+  if (!contractAddress) return "";
+  const trimmed = contractAddress.trim();
+  if (!trimmed || trimmed === "[object Object]" || trimmed === "undefined" || trimmed === "null") {
+    return "";
+  }
+  return trimmed;
+}
+
+function readRuntimeContractAddress(): string {
+  if (typeof window === "undefined") return "";
+  return normalizeStoredContractAddress(window.localStorage.getItem(LOCAL_CONTRACT_ADDRESS_KEY));
+}
+
+function persistRuntimeContractAddress(contractAddress: string) {
+  if (typeof window === "undefined") return;
+  const normalized = normalizeStoredContractAddress(contractAddress);
+  if (!normalized) {
+    window.localStorage.removeItem(LOCAL_CONTRACT_ADDRESS_KEY);
+    return;
+  }
+  window.localStorage.setItem(LOCAL_CONTRACT_ADDRESS_KEY, normalized);
+}
+
 export interface RegisterAgentParams {
   agentName: string;
   category: 1 | 2 | 3;
@@ -47,7 +73,9 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
 
   // Cache providers per wallet session
   const providersRef = useRef<GuardianProviders | null>(null);
+  const providersIdentityRef = useRef<string>("");
   const contractRef = useRef<GuardianContractAPI | null>(null);
+  const runtimeContractAddressRef = useRef<string>(CONTRACT_ADDRESS || readRuntimeContractAddress());
 
   function resetTx() {
     setTxStep("idle");
@@ -55,14 +83,29 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
     setTxError(undefined);
   }
 
+  function getContractAddress(): string {
+    return CONTRACT_ADDRESS || runtimeContractAddressRef.current || readRuntimeContractAddress();
+  }
+
   /**
    * Lazily initialise providers from the wallet API.
    * Reuses cached providers if already set up.
    */
   async function getProviders(walletAPI: unknown, walletAddress: string, coinPublicKey: string, encryptionPublicKey?: string): Promise<GuardianProviders> {
-    if (providersRef.current) return providersRef.current;
+    const providerIdentity = [
+      walletAddress,
+      coinPublicKey,
+      encryptionPublicKey ?? coinPublicKey,
+    ].join("|");
+
+    if (providersRef.current && providersIdentityRef.current === providerIdentity) {
+      return providersRef.current;
+    }
+
     const providers = await setupProviders(walletAPI, walletAddress, coinPublicKey, encryptionPublicKey);
     providersRef.current = providers;
+    providersIdentityRef.current = providerIdentity;
+    contractRef.current = null;
     return providers;
   }
 
@@ -101,18 +144,27 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
         );
       }
 
-      if (!CONTRACT_ADDRESS) {
-        throw new Error(
-          "VITE_CONTRACT_ADDRESS is empty. Deploy the Guardian contract first, add its address to .env, and restart pnpm dev."
-        );
-      }
-
       // Step 2: Setup providers
       const providers = await getProviders(walletAPI, walletAddress, coinPublicKey, encryptionPublicKey);
 
       // Build private state — owner address from wallet, random agent secret
-      const ownerBytes = new TextEncoder().encode(walletAddress.slice(0, 32).padEnd(32, "0"));
+      if (!walletAddress) {
+        throw new Error("Wallet address is required to create agent");
+      }
+      // Ensure we have exactly 32 bytes for owner address
+      const normalizedAddress = walletAddress.slice(0, 32).padEnd(32, "0");
+      const ownerBytes = new TextEncoder().encode(normalizedAddress);
+      if (ownerBytes.length !== 32) {
+        throw new Error(`Owner address must be 32 bytes, got ${ownerBytes.length}`);
+      }
+
       const agentSecretBytes = crypto.getRandomValues(new Uint8Array(32));
+      if (agentSecretBytes.length !== 32) {
+        throw new Error(`Agent secret must be 32 bytes, got ${agentSecretBytes.length}`);
+      }
+
+      console.log('[Guardian] Creating private state...');
+
       const privateState = createPrivateState(
         ownerBytes,
         BigInt(params.spendingLimitCents),
@@ -129,8 +181,19 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
       setTxStep("generating");
 
       let api: GuardianContractAPI;
-      const { joinGuardianContract } = await import("../contract/guardian-api");
-      api = await joinGuardianContract(providers as never, CONTRACT_ADDRESS, privateState);
+      const contractAddress = getContractAddress();
+      console.log('[Guardian] Contract address:', contractAddress || 'none (will deploy)');
+
+      if (contractAddress) {
+        const { joinGuardianContract } = await import("../contract/guardian-api");
+        api = await joinGuardianContract(providers as never, contractAddress, privateState);
+      } else {
+        const { deployGuardianContract } = await import("../contract/guardian-api");
+        const deployed = await deployGuardianContract(providers as never, privateState);
+        api = deployed.api;
+        runtimeContractAddressRef.current = deployed.contractAddress;
+        persistRuntimeContractAddress(deployed.contractAddress);
+      }
       contractRef.current = api;
 
       // Step 4: Wallet signing (happens inside registerAgent call)
@@ -211,9 +274,10 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
     setTxStep("validating");
 
     try {
-      if (!CONTRACT_ADDRESS) {
+      const contractAddress = getContractAddress();
+      if (!contractAddress) {
         throw new Error(
-          "VITE_CONTRACT_ADDRESS is empty. Deploy the Guardian contract first, add its address to .env, and restart pnpm dev."
+          "No Guardian contract address is configured yet. Register an agent once to deploy it from the connected wallet, or add VITE_CONTRACT_ADDRESS to .env and restart pnpm dev."
         );
       }
 
@@ -226,7 +290,7 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
       if (!contractRef.current) {
         const { joinGuardianContract } = await import("../contract/guardian-api");
         const dummyState = createPrivateState(new Uint8Array(32), 0n, new Uint8Array(32));
-        contractRef.current = await joinGuardianContract(providers as never, CONTRACT_ADDRESS, dummyState);
+        contractRef.current = await joinGuardianContract(providers as never, contractAddress, dummyState);
       }
 
       setTxStep("signing");
@@ -274,9 +338,10 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
     setTxStep("validating");
 
     try {
-      if (!CONTRACT_ADDRESS) {
+      const contractAddress = getContractAddress();
+      if (!contractAddress) {
         throw new Error(
-          "VITE_CONTRACT_ADDRESS is empty. Deploy the Guardian contract first, add its address to .env, and restart pnpm dev."
+          "No Guardian contract address is configured yet. Register an agent once to deploy it from the connected wallet, or add VITE_CONTRACT_ADDRESS to .env and restart pnpm dev."
         );
       }
 
@@ -289,7 +354,7 @@ export function useAgentRegistry(): UseAgentRegistryReturn {
       if (!contractRef.current) {
         const { joinGuardianContract } = await import("../contract/guardian-api");
         const dummyState = createPrivateState(new Uint8Array(32), 0n, new Uint8Array(32));
-        contractRef.current = await joinGuardianContract(providers as never, CONTRACT_ADDRESS, dummyState);
+        contractRef.current = await joinGuardianContract(providers as never, contractAddress, dummyState);
       }
 
       setTxStep("signing");

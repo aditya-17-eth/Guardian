@@ -1,441 +1,256 @@
-import "dotenv/config";
+// scripts/deploy-contract.ts
+import * as path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as fs from 'node:fs';
+import * as Rx from 'rxjs';
+import { Buffer } from 'buffer';
+import { WebSocket } from 'ws';
 
-import { randomBytes } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { deployContract } from '@midnight-ntwrk/midnight-js-contracts';
+import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
+import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
+import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
+import { setNetworkId, getNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import * as ledger from '@midnight-ntwrk/ledger-v8';
+import { WalletFacade } from '@midnight-ntwrk/wallet-sdk-facade';
+import { DustWallet } from '@midnight-ntwrk/wallet-sdk-dust-wallet';
+import { HDWallet, Roles, generateRandomSeed } from '@midnight-ntwrk/wallet-sdk-hd';
+import { ShieldedWallet } from '@midnight-ntwrk/wallet-sdk-shielded';
+import {
+  createKeystore,
+  InMemoryTransactionHistoryStorage,
+  PublicKey,
+  UnshieldedWallet,
+} from '@midnight-ntwrk/wallet-sdk-unshielded-wallet';
+import { CompiledContract } from '@midnight-ntwrk/compact-js';
+import { toHex } from '@midnight-ntwrk/midnight-js-utils';
+import { unshieldedToken } from '@midnight-ntwrk/ledger-v8';
 
-import * as CompiledContract from "@midnight-ntwrk/compact-js/effect/CompiledContract";
-import { deployContract } from "@midnight-ntwrk/midnight-js-contracts";
-import { httpClientProofProvider } from "@midnight-ntwrk/midnight-js-http-client-proof-provider";
-import { indexerPublicDataProvider } from "@midnight-ntwrk/midnight-js-indexer-public-data-provider";
-import { levelPrivateStateProvider } from "@midnight-ntwrk/midnight-js-level-private-state-provider";
-import { setNetworkId } from "@midnight-ntwrk/midnight-js-network-id";
-import { NodeZkConfigProvider } from "@midnight-ntwrk/midnight-js-node-zk-config-provider";
+// Required for wallet sync in Node.js
+// @ts-expect-error
+globalThis.WebSocket = WebSocket;
 
-import { createPrivateState, createWitnesses, type GuardianPrivateState } from "../src/contract/helpers.ts";
+setNetworkId('preprod');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, "..");
-const ENV_PATH = path.join(PROJECT_ROOT, ".env");
-const PACKAGE_JSON_PATH = path.join(PROJECT_ROOT, "package.json");
-const CONTRACT_INFO_PATH = path.join(
-  PROJECT_ROOT,
-  "contracts",
-  "managed",
-  "guardian",
-  "compiler",
-  "contract-info.json"
+const CONFIG = {
+  indexer: 'https://indexer.preprod.midnight.network/api/v3/graphql',
+  indexerWS: 'wss://indexer.preprod.midnight.network/api/v3/graphql/ws',
+  node: 'https://rpc.preprod.midnight.network',
+  proofServer: 'http://127.0.0.1:6300',
+};
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ← Point to YOUR contract, not hello-world
+const zkConfigPath = path.resolve(
+  __dirname, '..', 'contracts', 'managed', 'guardian'
 );
-const CONTRACT_MODULE_PATH = path.join(
-  PROJECT_ROOT,
-  "contracts",
-  "managed",
-  "guardian",
-  "contract",
-  "index.js"
+
+const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
+const GuardianContract = await import(pathToFileURL(contractPath).href);
+
+const compiledContract = CompiledContract.make('guardian', GuardianContract.Contract).pipe(
+  CompiledContract.withVacantWitnesses,
+  CompiledContract.withCompiledFileAssets(zkConfigPath),
 );
-const COMPILED_ASSETS_PATH = path.join(PROJECT_ROOT, "contracts", "managed", "guardian");
-const PRIVATE_STATE_ID = "guardian-private-state";
-const DEFAULT_PROOF_SERVER_URI = "http://localhost:6300";
-const PREPROD_NETWORK_ID = 2;
 
-interface EnvConfig {
-  midnightNetwork: string;
-  sdkNetworkId: string;
-  indexerUri: string;
-  indexerWsUri: string;
-  proofServerUri: string;
-  nodeUri: string;
-  walletSeed: string;
-  privateStatePassword: string;
-}
+async function createWallet(seed: string) {
+  const hdWallet = HDWallet.fromSeed(Buffer.from(seed, 'hex'));
+  if (hdWallet.type !== 'seedOk') throw new Error('Invalid seed');
 
-interface PackageJson {
-  dependencies?: Record<string, string>;
-}
+  const result = hdWallet.hdWallet
+    .selectAccount(0)
+    .selectRoles([Roles.Zswap, Roles.NightExternal, Roles.Dust])
+    .deriveKeysAt(0);
 
-interface ContractInfo {
-  "compiler-version": string;
-  "language-version": string;
-  "runtime-version": string;
-}
+  if (result.type !== 'keysDerived') throw new Error('Key derivation failed');
+  hdWallet.hdWallet.clear();
+  const keys = result.keys;
 
-interface WalletStateLike {
-  address: string;
-  coinPublicKey: unknown;
-  encryptionPublicKey?: unknown;
-}
+  const networkId = getNetworkId();
+  const shieldedSecretKeys = ledger.ZswapSecretKeys.fromSeed(keys[Roles.Zswap]);
+  const dustSecretKey = ledger.DustSecretKey.fromSeed(keys[Roles.Dust]);
+  const unshieldedKeystore = createKeystore(keys[Roles.NightExternal], networkId);
 
-interface SubscriptionLike {
-  unsubscribe?: () => void;
-}
-
-interface SubscribableLike<T> {
-  subscribe: (
-    next:
-      | ((value: T) => void)
-      | {
-          next?: (value: T) => void;
-          error?: (error: unknown) => void;
-        }
-  ) => SubscriptionLike;
-}
-
-interface WalletLike {
-  state(): SubscribableLike<WalletStateLike>;
-  balanceTransaction?: (...args: unknown[]) => Promise<unknown>;
-  balanceAndProveTransaction?: (...args: unknown[]) => Promise<unknown>;
-  proveTransaction?: (...args: unknown[]) => Promise<unknown>;
-  submitTransaction?: (...args: unknown[]) => Promise<string>;
-  submitTx?: (...args: unknown[]) => Promise<string>;
-}
-
-function normalizeVersion(version: string | undefined): string {
-  return (version ?? "").trim().replace(/^[~^><=\s]+/, "");
-}
-
-function getRequiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`Missing required environment variable ${name}.`);
-  }
-
-  return value;
-}
-
-function getEnvConfig(): EnvConfig {
-  const walletSeed = process.env.MIDNIGHT_WALLET_SEED?.trim();
-  if (!walletSeed) {
-    const suggestedSeed = randomBytes(32).toString("hex");
-    throw new Error(
-      [
-        "MIDNIGHT_WALLET_SEED is missing.",
-        "Add a 32-byte hex seed to .env so the deploy script can build a Midnight wallet.",
-        `Suggested seed: ${suggestedSeed}`,
-      ].join("\n")
-    );
-  }
-
-  const privateStatePassword = process.env.MIDNIGHT_PRIVATE_STATE_PASSWORD?.trim();
-  if (!privateStatePassword) {
-    throw new Error(
-      "MIDNIGHT_PRIVATE_STATE_PASSWORD is missing. Add a strong password with at least 16 characters to .env."
-    );
-  }
-
-  if (privateStatePassword.length < 16) {
-    throw new Error("MIDNIGHT_PRIVATE_STATE_PASSWORD must be at least 16 characters long.");
-  }
-
-  const midnightNetwork = (process.env.VITE_MIDNIGHT_NETWORK ?? "preprod").trim().toLowerCase();
-  if (midnightNetwork !== "preprod") {
-    throw new Error(
-      `Guardian is configured for Midnight Preprod only. Received VITE_MIDNIGHT_NETWORK=${midnightNetwork}.`
-    );
-  }
-
-  return {
-    midnightNetwork,
-    sdkNetworkId: "test",
-    indexerUri: getRequiredEnv("VITE_INDEXER_URI"),
-    indexerWsUri: getRequiredEnv("VITE_INDEXER_WS_URI"),
-    proofServerUri: (process.env.MIDNIGHT_PROOF_SERVER_URI ?? DEFAULT_PROOF_SERVER_URI).trim(),
-    nodeUri: getRequiredEnv("MIDNIGHT_NODE_URI"),
-    walletSeed,
-    privateStatePassword,
+  const walletConfig = {
+    networkId,
+    indexerClientConnection: {
+      indexerHttpUrl: CONFIG.indexer,
+      indexerWsUrl: CONFIG.indexerWS,
+    },
+    provingServerUrl: new URL(CONFIG.proofServer),
+    relayURL: new URL(CONFIG.node.replace(/^http/, 'ws')),
   };
-}
 
-async function readJsonFile<T>(filePath: string): Promise<T> {
-  const raw = await readFile(filePath, "utf8");
-  return JSON.parse(raw) as T;
-}
+  const shieldedWallet = ShieldedWallet(walletConfig)
+    .startWithSecretKeys(shieldedSecretKeys);
 
-async function getConfiguredRuntimeVersion(): Promise<string> {
-  const packageJson = await readJsonFile<PackageJson>(PACKAGE_JSON_PATH);
-  const runtimeVersion = normalizeVersion(
-    packageJson.dependencies?.["@midnight-ntwrk/compact-runtime"]
+  const unshieldedWallet = UnshieldedWallet({
+    networkId,
+    indexerClientConnection: walletConfig.indexerClientConnection,
+    txHistoryStorage: new InMemoryTransactionHistoryStorage(),
+  }).startWithPublicKey(PublicKey.fromKeyStore(unshieldedKeystore));
+
+  const dustWallet = DustWallet({
+    ...walletConfig,
+    costParameters: {
+      additionalFeeOverhead: 300_000_000_000_000n,
+      feeBlocksMargin: 5,
+    },
+  }).startWithSecretKey(
+    dustSecretKey,
+    ledger.LedgerParameters.initialParameters().dust,
   );
 
-  if (!runtimeVersion) {
-    throw new Error("Could not determine @midnight-ntwrk/compact-runtime from package.json.");
-  }
+  const wallet = new WalletFacade(shieldedWallet, unshieldedWallet, dustWallet);
+  await wallet.start(shieldedSecretKeys, dustSecretKey);
 
-  return runtimeVersion;
+  return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore };
 }
 
-async function preflightContractArtifacts(): Promise<void> {
-  const contractInfo = await readJsonFile<ContractInfo>(CONTRACT_INFO_PATH);
-  const configuredRuntimeVersion = await getConfiguredRuntimeVersion();
+async function main() {
+  console.log('\n[Guardian] Starting deployment to Midnight Preprod...\n');
 
-  if (contractInfo["runtime-version"] !== configuredRuntimeVersion) {
-    throw new Error(
-      [
-        "Guardian contract artifacts are out of sync with the installed Midnight runtime.",
-        `Compiled runtime: ${contractInfo["runtime-version"]}`,
-        `Installed runtime: ${configuredRuntimeVersion}`,
-        `Artifact file: ${CONTRACT_INFO_PATH}`,
-        "",
-        "Run the Compact compiler again in WSL before deploying:",
-        "compact compile contracts/guardian.compact contracts/managed/guardian",
-        "",
-        "If the compiled runtime still does not match after recompiling, the repo's Midnight SDK versions and Compact toolchain are not compatible yet.",
-      ].join("\n")
+  if (!fs.existsSync(path.join(zkConfigPath, 'contract', 'index.js'))) {
+    console.error('Contract not compiled! Run: compact compile contracts/guardian.compact');
+    process.exit(1);
+  }
+
+  // Use seed from .env or generate new one
+  const seed = process.env.DEPLOY_SEED ?? toHex(Buffer.from(generateRandomSeed()));
+
+  if (!process.env.DEPLOY_SEED) {
+    console.log('⚠️  NEW WALLET SEED — SAVE THIS:\n', seed, '\n');
+    console.log('Add to .env: DEPLOY_SEED=' + seed + '\n');
+  }
+
+  console.log('[Guardian] Creating wallet...');
+  const walletCtx = await createWallet(seed);
+
+  console.log('[Guardian] Syncing with Preprod network...');
+  const state = await Rx.firstValueFrom(
+    walletCtx.wallet.state().pipe(
+      Rx.throttleTime(5000),
+      Rx.filter((s) => s.isSynced),
+    ),
+  );
+
+  const address = walletCtx.unshieldedKeystore.getBech32Address();
+  const balance = state.unshielded.balances[unshieldedToken().raw] ?? 0n;
+  console.log('[Guardian] Wallet address:', address);
+  console.log('[Guardian] Balance:', balance.toLocaleString(), 'tNight\n');
+
+  if (balance === 0n) {
+    console.log('❌ No tNight balance. Visit: https://faucet.preprod.midnight.network');
+    console.log('   Paste address:', address);
+    console.log('   Then run deploy again with DEPLOY_SEED=' + seed);
+    await walletCtx.wallet.stop();
+    process.exit(1);
+  }
+
+  // DUST registration
+  if (state.dust.walletBalance(new Date()) === 0n) {
+    console.log('[Guardian] Registering for DUST...');
+    const nightUtxos = state.unshielded.availableCoins.filter(
+      (c: any) => !c.meta?.registeredForDustGeneration,
     );
+
+    if (nightUtxos.length > 0) {
+      const recipe = await walletCtx.wallet.registerNightUtxosForDustGeneration(
+        nightUtxos,
+        walletCtx.unshieldedKeystore.getPublicKey(),
+        (payload) => walletCtx.unshieldedKeystore.signData(payload),
+      );
+      await walletCtx.wallet.submitTransaction(
+        await walletCtx.wallet.finalizeRecipe(recipe),
+      );
+    }
+
+    console.log('[Guardian] Waiting for DUST...');
+    await Rx.firstValueFrom(
+      walletCtx.wallet.state().pipe(
+        Rx.throttleTime(5000),
+        Rx.filter((s) => s.isSynced),
+        Rx.filter((s) => s.dust.walletBalance(new Date()) > 0n),
+      ),
+    );
+    console.log('[Guardian] DUST ready\n');
   }
-}
 
-async function ensureProofServerAvailable(proofServerUri: string): Promise<void> {
-  const healthUrl = `${proofServerUri.replace(/\/$/, "")}/health`;
-  const response = await fetch(healthUrl, { signal: AbortSignal.timeout(3_000) });
+  // Build providers
+  const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
 
-  if (!response.ok) {
-    throw new Error(`Proof server health check failed at ${healthUrl} with status ${response.status}.`);
-  }
-}
+  const walletStateSync = await Rx.firstValueFrom(
+    walletCtx.wallet.state().pipe(Rx.filter((s) => s.isSynced)),
+  );
 
-function addressToWitnessBytes(address: string): Uint8Array {
-  const encoded = new TextEncoder().encode(address);
-  return encoded.length >= 32 ? encoded.slice(0, 32) : Uint8Array.from([...encoded, ...new Uint8Array(32 - encoded.length)]);
-}
-
-async function waitForWalletState(wallet: WalletLike): Promise<WalletStateLike> {
-  return new Promise<WalletStateLike>((resolve, reject) => {
-    let settled = false;
-    let subscription: SubscriptionLike | undefined;
-
-    const cleanup = () => {
-      if (!settled) {
-        settled = true;
-      }
-      subscription?.unsubscribe?.();
-    };
-
-    try {
-      subscription = wallet.state().subscribe({
-        next: (state) => {
-          if (!state?.address || state.coinPublicKey == null) {
-            return;
-          }
-
-          cleanup();
-          resolve(state);
+  const walletProvider = {
+    getCoinPublicKey: () =>
+      walletStateSync.shielded.coinPublicKey.toHexString(),
+    getEncryptionPublicKey: () =>
+      walletStateSync.shielded.encryptionPublicKey.toHexString(),
+    async balanceTx(tx: any, ttl?: Date) {
+      const recipe = await walletCtx.wallet.balanceUnboundTransaction(
+        tx,
+        {
+          shieldedSecretKeys: walletCtx.shieldedSecretKeys,
+          dustSecretKey: walletCtx.dustSecretKey,
         },
-        error: (error) => {
-          cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
-        },
-      });
-    } catch (error) {
-      cleanup();
-      reject(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
-}
-
-async function buildWallet(config: EnvConfig): Promise<{ wallet: WalletLike; state: WalletStateLike }> {
-  const walletModule = (await import("@midnight-ntwrk/wallet")) as {
-    WalletBuilder?: {
-      build?: (...args: unknown[]) => Promise<WalletLike>;
-    };
+        { ttl: ttl ?? new Date(Date.now() + 30 * 60 * 1000) },
+      );
+      return walletCtx.wallet.finalizeRecipe(recipe);
+    },
+    submitTx: (tx: any) => walletCtx.wallet.submitTransaction(tx) as any,
   };
 
-  if (!walletModule.WalletBuilder?.build) {
-    throw new Error("Could not find WalletBuilder.build in @midnight-ntwrk/wallet.");
-  }
-
-  const wallet = await walletModule.WalletBuilder.build(
-    config.indexerUri,
-    config.indexerWsUri,
-    config.proofServerUri,
-    config.nodeUri,
-    config.walletSeed,
-    PREPROD_NETWORK_ID
-  );
-
-  const state = await waitForWalletState(wallet);
-  return { wallet, state };
-}
-
-async function balanceWithWallet(wallet: WalletLike, tx: unknown): Promise<unknown> {
-  if (typeof wallet.balanceAndProveTransaction === "function") {
-    return wallet.balanceAndProveTransaction(tx);
-  }
-
-  if (typeof wallet.balanceTransaction === "function") {
-    const attempts: unknown[][] = [[tx], [tx, []]];
-
-    let lastError: unknown;
-    for (const args of attempts) {
-      try {
-        const balancedTx = await wallet.balanceTransaction(...args);
-
-        if (typeof wallet.proveTransaction === "function") {
-          try {
-            return await wallet.proveTransaction(balancedTx);
-          } catch {
-            return balancedTx;
-          }
-        }
-
-        return balancedTx;
-      } catch (error) {
-        lastError = error;
-      }
-    }
-
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Wallet failed to balance the deployment transaction.");
-  }
-
-  throw new Error("Wallet does not expose a supported balance method.");
-}
-
-async function submitWithWallet(wallet: WalletLike, tx: unknown): Promise<string> {
-  if (typeof wallet.submitTransaction === "function") {
-    return wallet.submitTransaction(tx);
-  }
-
-  if (typeof wallet.submitTx === "function") {
-    return wallet.submitTx(tx);
-  }
-
-  throw new Error("Wallet does not expose a supported submit method.");
-}
-
-async function buildCompiledContract(privateState: GuardianPrivateState) {
-  const contractModule = (await import(pathToFileURL(CONTRACT_MODULE_PATH).href)) as {
-    Contract: new (...args: never[]) => {
-      circuits: Record<string, unknown>;
-      impureCircuits?: Record<string, unknown>;
-      provableCircuits?: Record<string, unknown>;
-    };
-  };
-
-  const witnesses = createWitnesses(privateState);
-  const BaseContract = contractModule.Contract;
-
-  class GuardianContractAdapter extends BaseContract {
-    constructor(...args: never[]) {
-      super(...args);
-
-      const adaptedContract = this as {
-        circuits: Record<string, unknown>;
-        impureCircuits?: Record<string, unknown>;
-        provableCircuits?: Record<string, unknown>;
-      };
-
-      adaptedContract.provableCircuits =
-        adaptedContract.provableCircuits ??
-        adaptedContract.impureCircuits ??
-        adaptedContract.circuits;
-    }
-  }
-
-  return CompiledContract.make("guardian", GuardianContractAdapter as never).pipe(
-    CompiledContract.withWitnesses(witnesses as never),
-    CompiledContract.withCompiledFileAssets(COMPILED_ASSETS_PATH as never)
-  );
-}
-
-async function updateEnvContractAddress(contractAddress: string): Promise<void> {
-  let envContents = "";
-
-  try {
-    await access(ENV_PATH);
-    envContents = await readFile(ENV_PATH, "utf8");
-  } catch {
-    envContents = "";
-  }
-
-  const nextLine = `VITE_CONTRACT_ADDRESS=${contractAddress}`;
-  const updatedContents = /^VITE_CONTRACT_ADDRESS=.*$/m.test(envContents)
-    ? envContents.replace(/^VITE_CONTRACT_ADDRESS=.*$/m, nextLine)
-    : `${envContents.trimEnd()}${envContents.trim() ? "\n" : ""}${nextLine}\n`;
-
-  await writeFile(ENV_PATH, updatedContents, "utf8");
-}
-
-function formatError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.stack ?? error.message;
-  }
-
-  return String(error);
-}
-
-async function main(): Promise<void> {
-  await preflightContractArtifacts();
-  const config = getEnvConfig();
-  await ensureProofServerAvailable(config.proofServerUri);
-
-  setNetworkId(config.sdkNetworkId);
-
-  const { wallet, state } = await buildWallet(config);
-
-  console.log(`Using Midnight wallet address: ${state.address}`);
-
-  const privateState = createPrivateState(
-    addressToWitnessBytes(state.address),
-    0n,
-    randomBytes(32)
-  );
-  const compiledContract = await buildCompiledContract(privateState);
-
-  const zkConfigProvider = new NodeZkConfigProvider(COMPILED_ASSETS_PATH);
   const providers = {
     privateStateProvider: levelPrivateStateProvider({
-      privateStoragePasswordProvider: async () => config.privateStatePassword,
-      accountId: state.address,
+      privateStateStoreName: 'guardian-deploy-state',
+      walletProvider,
     }),
-    publicDataProvider: indexerPublicDataProvider(config.indexerUri, config.indexerWsUri),
-    proofProvider: httpClientProofProvider(config.proofServerUri, zkConfigProvider),
+    publicDataProvider: indexerPublicDataProvider(CONFIG.indexer, CONFIG.indexerWS),
     zkConfigProvider,
-    walletProvider: {
-      coinPublicKey: state.coinPublicKey,
-      getCoinPublicKey: () => state.coinPublicKey,
-      getEncryptionPublicKey: () => state.encryptionPublicKey ?? state.coinPublicKey,
-      balanceTx: (tx: unknown) => balanceWithWallet(wallet, tx),
-    },
-    midnightProvider: {
-      submitTx: (tx: unknown) => submitWithWallet(wallet, tx),
-    },
+    proofProvider: httpClientProofProvider(CONFIG.proofServer, zkConfigProvider),
+    walletProvider,
+    midnightProvider: walletProvider,
   };
 
-  const deployed = await deployContract(providers as never, {
+  // Deploy
+  console.log('[Guardian] Deploying contract (30-60 seconds)...');
+  const deployed = await deployContract(providers, {
     compiledContract,
-    privateStateId: PRIVATE_STATE_ID,
-    initialPrivateState: privateState,
-  } as never);
+    privateStateId: 'guardianState',
+    initialPrivateState: {},
+  });
 
-  const contractAddress = (
-    deployed as {
-      deployTxData?: {
-        public?: {
-          contractAddress?: string;
-        };
-      };
-    }
-  ).deployTxData?.public?.contractAddress;
+  const contractAddress = deployed.deployTxData.public.contractAddress;
+  console.log('\n✅ Guardian deployed successfully!');
+  console.log('Contract address:', contractAddress);
 
-  if (!contractAddress) {
-    throw new Error("Deployment finished without returning a contract address.");
-  }
+  // Save to file
+  const info = {
+    contractAddress,
+    seed,
+    network: 'preprod',
+    deployedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync('deployment.json', JSON.stringify(info, null, 2));
+  console.log('\nSaved to deployment.json');
+  console.log('\nAdd to .env:');
+  console.log('VITE_CONTRACT_ADDRESS=' + contractAddress);
 
-  await updateEnvContractAddress(contractAddress);
-
-  console.log("");
-  console.log(`Guardian deployed successfully: ${contractAddress}`);
-  console.log(`Updated ${ENV_PATH} with VITE_CONTRACT_ADDRESS.`);
-  console.log("Restart pnpm dev after deployment so the frontend picks up the new env value.");
+  await walletCtx.wallet.stop();
 }
 
-main().catch((error) => {
-  console.error("");
-  console.error("Guardian deployment failed.");
-  console.error(formatError(error));
-  process.exitCode = 1;
+main().catch((e) => {
+  console.error('Deployment failed:', e.message ?? e);
+  process.exit(1);
 });
+```
+
+---
+
+### Step 3 — Also add DEPLOY_SEED to .env
+```
+DEPLOY_SEED=                    ← leave blank first run, it generates one
