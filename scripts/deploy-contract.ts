@@ -247,10 +247,3 @@ main().catch((e) => {
   console.error('Deployment failed:', e.message ?? e);
   process.exit(1);
 });
-```
-
----
-
-### Step 3 — Also add DEPLOY_SEED to .env
-```
-DEPLOY_SEED=                    ← leave blank first run, it generates one

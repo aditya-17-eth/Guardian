@@ -19,7 +19,6 @@ Sarah wants an AI to auto-invest her crypto weekly. She opens Guardian, creates 
 
 - ZK-backed agent credentials on Midnight Preprod testnet
 - AI-powered AML validation (runs locally, never sent to server)
-- Real-time spending limits and activity tracking
 - Revoke or pause any agent instantly
 - Privacy-first: your wallet address never appears on-chain
 - 3-step agent registration wizard with live ZK proof generation
