@@ -2,9 +2,6 @@
 
 > Control your AI financial agents. Prove they're safe. Stay anonymous.
 
-[![Frontend CI](https://github.com/your-org/guardian/actions/workflows/frontend-ci.yml/badge.svg)](https://github.com/your-org/guardian/actions/workflows/frontend-ci.yml)
-[![Contracts CI](https://github.com/your-org/guardian/actions/workflows/contracts-ci.yml/badge.svg)](https://github.com/your-org/guardian/actions/workflows/contracts-ci.yml)
-
 ## What is Guardian?
 
 Guardian lets regular people hire, manage, and control autonomous AI agents that act on their behalf in DeFi — with full ZK-privacy guaranteeing the user's real identity is never exposed on-chain.
