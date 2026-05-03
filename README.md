@@ -1,6 +1,5 @@
 # Guardian — AI Agent Identity Dashboard on Midnight
 
-> Control your AI financial agents. Prove they're safe. Stay anonymous.
 
 ## What is Guardian?
 
