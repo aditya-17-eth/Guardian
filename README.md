@@ -170,4 +170,4 @@ See [docs/security.md](./docs/security.md) for the full security checklist.
 
 ## License
 
-MIT — Built for the Into the Midnight Hackathon · March 2026
+MIT
