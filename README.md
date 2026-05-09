@@ -145,17 +145,6 @@ Browser (React + TypeScript)
 | `MIDNIGHT_PRIVATE_STATE_PASSWORD` | Secret password for encrypting local Midnight private state |
 | `VITE_CONTRACT_ADDRESS` | Deployed contract address |
 
-## Scripts
-
-```bash
-pnpm dev              # Start dev server
-pnpm build            # Production build
-pnpm test             # Run all tests
-pnpm type-check       # TypeScript type check
-pnpm compile:contract # Compile Compact contract
-pnpm deploy:contract  # Deploy to Preprod
-pnpm db:migrate       # Push Supabase migrations
-```
 
 ## Security
 
