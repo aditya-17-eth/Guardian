@@ -7,9 +7,6 @@ Guardian lets regular people hire, manage, and control autonomous AI agents that
 
 Built for the **Into the Midnight Hackathon · March 2026** on the Midnight Preprod testnet.
 
-### Core user story
-
-Sarah wants an AI to auto-invest her crypto weekly. She opens Guardian, creates a "DCA Bot" agent, sets a $1,000/month cap, and connects her Lace wallet. The app runs an AI validator locally on her data, generates a ZK proof via a Compact contract on Midnight, and posts only the proof on-chain. DeFi protocols see "authorized, AML-clear, Tier A agent" — they never see Sarah's name, balance, or wallet address.
 
 ## Features
 
