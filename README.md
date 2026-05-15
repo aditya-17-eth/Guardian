@@ -154,6 +154,3 @@ See [docs/security.md](./docs/security.md) for the full security checklist.
 3. Run `pnpm test` and `pnpm type-check` before submitting
 4. Open a pull request
 
-## License
-
-MIT
