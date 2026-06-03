@@ -12,7 +12,6 @@ Built for the **Into the Midnight Hackathon · March 2026** on the Midnight Prep
 
 - ZK-backed agent credentials on Midnight Preprod testnet
 - AI-powered AML validation (runs locally, never sent to server)
-- Revoke or pause any agent instantly
 - 3-step agent registration wizard with live ZK proof generation
 - Admin metrics dashboard with 30s auto-refresh
 
