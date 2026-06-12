@@ -36,7 +36,6 @@ Built for the **Into the Midnight Hackathon · March 2026** on the Midnight Prep
 - pnpm (`npm install -g pnpm`)
 - Chrome browser with [Lace Beta wallet extension](https://docs.midnight.network/develop/how-to/lace-wallet)
 - tDUST from [faucet.preprod.midnight.network](https://faucet.preprod.midnight.network)
-- Docker Desktop (for the local proof server)
 
 ### Installation
 
