@@ -65,7 +65,7 @@ Open [http://localhost:5173](http://localhost:5173) and connect your Lace wallet
 
 ## Contract Deployment
 
-The Guardian contract is written with `pragma language_version 0.21;` and should be compiled in WSL with the current Compact compiler on your PATH.
+The Guardian contract is written with `pragma language_version 0.21;` and should be compiled in WSL with the current Compact compiler.
 
 ### Compile
 
