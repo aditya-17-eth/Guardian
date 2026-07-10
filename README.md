@@ -5,7 +5,6 @@
 
 Guardian lets regular people hire, manage, and control autonomous AI agents that act on their behalf in DeFi — with full ZK-privacy guaranteeing the user's real identity is never exposed on-chain.
 
-Built for the **Into the Midnight Hackathon · March 2026** on the Midnight Preprod testnet.
 
 
 ## Features
