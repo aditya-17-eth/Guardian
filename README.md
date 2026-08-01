@@ -9,7 +9,7 @@ Guardian lets regular people hire, manage, and control autonomous AI agents that
 
 ## Features
 
-- ZK-backed agent credentials on Midnight Preprod testnet
+- ZK-backed agent credentials on Midnight Preprod testnet.
 - AI-powered AML validation (runs locally, never sent to server)
 - 3-step agent registration wizard with live ZK proof generation
 - Admin metrics dashboard with 30s auto-refresh
